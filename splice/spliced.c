@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <pthread.h>
+#include <fcntl.h>
 
 #define BUF 10240
 #define BACKLOG 100
@@ -20,6 +21,9 @@ struct cli_struct
 	struct sockaddr_in client_addr;
 	int upstream_socket;
 	struct sockaddr_in upstream_addr;
+
+	int active;
+	int pipes[2];
 };
 
 // set up cli_struct array //
@@ -76,6 +80,9 @@ int clear(int id)
 	clients[id].upstream_socket = 0;
 	// end close proxy //
 
+	close(clients[id].pipes[0]);
+	close(clients[id].pipes[1]);
+
 	// set client as usabe //
 	clients[id].run = 0;
 
@@ -122,10 +129,12 @@ int next()
 		{
 			if (FD_ISSET(clients[a].client_socket, &fds))
 			{
+				clients[a].active = clients[a].client_socket;
 				return a;
 			}
 			if (FD_ISSET(clients[a].upstream_socket, &fds))
 			{
+				clients[a].active = clients[a].upstream_socket;
 				return a;
 			}
 		}
@@ -148,94 +157,85 @@ work:
 		}
 		else
 		{
+			// start working //
 			//printf("worker(%d): something to do \n", id);
+			//printf(".");
 
+			
 			// read from client //
-			int recv_size;
-			recv_size = recv(clients[id].client_socket, &buffer, BUF, MSG_DONTWAIT);
-			if (recv_size == -1)
+			if (clients[id].active == clients[id].client_socket)
 			{
-				if (errno == EAGAIN)
+				int recv_size;
+				recv_size = recv(clients[id].client_socket, &buffer, BUF, MSG_DONTWAIT);
+				if (recv_size == -1)
 				{
-					//printf("worker(%d): client recv() EAGAIN\n", id);
-				}
-				else 
-				{
-					printf("worker(%d): client recv() failed: %d: %s \n", id, errno, strerror(errno));
-					clear(id);
-					goto work;
-				}
-			}
-			else if (recv_size == 0)
-			{
-				clear(id);
-				goto work;
-			}
-			else
-			{
-				// write to upstream //
-				if (recv_size != -1)
-				{
-					size_t write_size;
-					write_size = write(clients[id].upstream_socket, buffer, recv_size);
-					if (write_size == -1)
+					if (errno == EAGAIN)
 					{
-						printf("worker(%d): upstream write() failed: %d: %s \n", id, errno, strerror(errno));
+						//printf("worker(%d): client recv() EAGAIN\n", id);
+					}
+					else 
+					{
+						printf("worker(%d): client recv() failed: %d: %s \n", id, errno, strerror(errno));
 						clear(id);
 						goto work;
 					}
-					else
-					{
-						//printf("> %s", buffer);
-					}
 				}
-				// write to upstream //
-			}
-			// end read from client //
-
-
-			// read from upstream //
-			recv_size = 0;
-			recv_size = recv(clients[id].upstream_socket, &buffer, BUF, MSG_DONTWAIT);
-			if (recv_size == -1)
-			{
-				if (errno == EAGAIN)
+				else if (recv_size == 0)
 				{
-					//printf("worker(%d): upstream recv() EAGAIN\n", id);
-				}
-				else 
-				{
-					printf("worker(%d): upstream recv() failed: %d: %s \n", id, errno, strerror(errno));
 					clear(id);
 					goto work;
 				}
-			}
-			else if (recv_size == 0)
-			{
-				clear(id);
-				goto work;
-			}
-			else
-			{
-				// write to client //
-				if (recv_size != -1)
+				else
 				{
-					size_t write_size;
-					write_size = write(clients[id].client_socket, buffer, recv_size);
-					if (write_size == -1)
+					// write to upstream //
+					if (recv_size != -1)
 					{
-						printf("worker(%d): client write() failed: %d: %s \n", id, errno, strerror(errno));
+						size_t write_size;
+						write_size = write(clients[id].upstream_socket, buffer, recv_size);
+						if (write_size == -1)
+						{
+							printf("worker(%d): upstream write() failed: %d: %s \n", id, errno, strerror(errno));
+							clear(id);
+							goto work;
+						}
+						else
+						{
+							//printf("> %s", buffer);
+						}
+					}
+					// write to upstream //
+				}
+				// end read from client //
+			}
+			if (clients[id].active == clients[id].upstream_socket)
+			{
+				int splice_read;
+				splice_read = splice(clients[id].upstream_socket, NULL, clients[id].pipes[1], NULL, BUF, SPLICE_F_MORE | SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+				if (splice_read == -1)
+				{
+						printf("worker(%d): upstream splice() failed: %d: %s \n", id, errno, strerror(errno));
 						clear(id);
 						goto work;
-					}
-					else
+				}
+				if (splice_read == 0)
+				{
+						printf("worker(%d): nothing to splice() \n", id);
+						clear(id);
+						goto work;
+				}
+				else
+				{
+					//printf("worker(%d): splice() %d \n", id, splice_read);
+					int splice_write;
+					splice_write = splice(clients[id].pipes[0], NULL, clients[id].client_socket, NULL, BUF, SPLICE_F_MORE | SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+					if (splice_write == -1)
 					{
-						//printf("< %s", buffer);
+							printf("worker(%d): client splice() failed: %d: %s \n", id, errno, strerror(errno));
+							clear(id);
+							goto work;
 					}
 				}
-				// end write to client //
 			}
-			// end read from upstream //
 		}
 	}
 }
@@ -378,12 +378,22 @@ restart:
 					else
 					{
 						printf("server(%d): upstream connect() success: %d \n", id, clients[id].upstream_socket);
+
+						int createpipe;
+						createpipe = pipe(clients[id].pipes);
+						if (createpipe != 0)
+						{
+							printf("server(%d): pipe() failed: %d: %s \n", id, errno, strerror(errno));
+							clear(id);
+							goto restart;;
+						}
+						else
+						{
+							// allow worker to work on this connection //
+							clients[id].run = 1;
+						}
 					}
 					// end upstream connect //
-
-					clients[id].run = 1;
-
-
 				}
 			}
 		}
