@@ -10,9 +10,14 @@
 #include <pthread.h>
 #include <fcntl.h>
 
-#define BUF 10240
+#define BUF 16384
 #define BACKLOG 100
-#define MAXCLIENTS 100	
+#define MAXCLIENTS 100
+
+int listen_port;
+char* upstream_ip;
+int upstream_port;
+int mode;
 
 struct cli_struct
 {
@@ -22,7 +27,9 @@ struct cli_struct
 	int upstream_socket;
 	struct sockaddr_in upstream_addr;
 
-	int active;
+	int client_active;
+	int upstream_active;
+
 	int pipes[2];
 };
 
@@ -44,6 +51,76 @@ int find()
 	// or return -1 if none are available //
 	return -1;
 }
+
+fd_set fds;
+int high;
+int build(int id)
+{
+	FD_ZERO(&fds);
+	high = 0;
+
+	int a;
+	for (a = 0 ; a < MAXCLIENTS; a++)
+	{
+		if ((clients[a].run != 0) | (a == id))
+		{
+			//printf("build(): %d %d %d \n", a, clients[a].client_socket, clients[a].upstream_socket);
+		    FD_SET(clients[a].client_socket, &fds);
+			if (clients[a].client_socket > high)
+			{
+				high = clients[a].client_socket;
+			}
+
+		    FD_SET(clients[a].upstream_socket, &fds);
+			if (clients[a].upstream_socket > high)
+			{
+				high = clients[a].upstream_socket;
+			}
+		}
+	}
+	//printf("build() high: %d \n", high);
+	return 0;
+}
+
+int next()
+{
+	struct timeval tv;
+	tv.tv_sec = 0;
+	tv.tv_usec = 1000;
+
+build(-1);
+
+	//printf("next() high: %d \n", high);
+
+    int retval;
+    retval = select(high+1, &fds, NULL, NULL, &tv);
+	if (retval == 0)
+	{
+		return -1;
+	}
+
+	int a;
+	for (a = 0 ; a < MAXCLIENTS; a++)
+	{
+		if (clients[a].run != 0)
+		{
+			clients[a].client_active = 0;
+			if (FD_ISSET(clients[a].client_socket, &fds))
+			{
+				clients[a].client_active = 1;
+			}
+
+			clients[a].upstream_active = 0;
+			if (FD_ISSET(clients[a].upstream_socket, &fds))
+			{
+				clients[a].upstream_active = 1;
+			}
+		}
+	}
+
+	return 0;
+}
+
 
 int clear(int id)
 {
@@ -84,163 +161,177 @@ int clear(int id)
 	close(clients[id].pipes[1]);
 
 	// set client as usabe //
+	clients[id].client_active = 0;
+	clients[id].upstream_active = 0;
 	clients[id].run = 0;
+
+	//build(-1);
 
 	return 0;
 }
 
-int next()
-{
-    fd_set fds;
-    FD_ZERO(&fds);
-	int a;
-	int high;
-	for (a = 0 ; a < MAXCLIENTS; a++)
-	{
-		if (clients[a].run != 0)
-		{
-		    FD_SET(clients[a].client_socket, &fds);
-			if (clients[a].client_socket > high)
-			{
-				high = clients[a].client_socket;
-			}
-
-		    FD_SET(clients[a].upstream_socket, &fds);
-			if (clients[a].upstream_socket > high)
-			{
-				high = clients[a].upstream_socket;
-			}
-		}
-	}
-	struct timeval tv;
-	tv.tv_sec = 0;
-	tv.tv_usec = 1000;
-
-    int retval;
-    retval = select(high+1, &fds, NULL, NULL, &tv);
-	if (retval == 0)
-	{
-		return -1;
-	}
-
-	for (a = 0 ; a < MAXCLIENTS; a++)
-	{
-		if (clients[a].run != 0)
-		{
-			if (FD_ISSET(clients[a].client_socket, &fds))
-			{
-				clients[a].active = clients[a].client_socket;
-				return a;
-			}
-			if (FD_ISSET(clients[a].upstream_socket, &fds))
-			{
-				clients[a].active = clients[a].upstream_socket;
-				return a;
-			}
-		}
-	}
-
-	return -1;
-}
 
 void* worker()
 {
 	char buffer[BUF];
-work:
+	int recv_size;
+	size_t write_size;
+	int splice_read;
+	int splice_write;
 	while (1)
 	{
-		//printf("worker: poll() \n");
-		int id = next();
-		if (id == -1)
+		int go = next();
+		if (go == -1)
 		{
-			//printf("worker: nothing to do \n");
+			//printf("worker: nothing to do %d \n", go);
 		}
 		else
 		{
 			// start working //
-			//printf("worker(%d): something to do \n", id);
-			//printf(".");
-
-			
-			// read from client //
-			if (clients[id].active == clients[id].client_socket)
+			//printf("worker: something to do %d \n", go);
+			int id;
+			for (id = 0 ; id < MAXCLIENTS ; id++)
 			{
-				int recv_size;
-				recv_size = recv(clients[id].client_socket, &buffer, BUF, MSG_DONTWAIT);
-				if (recv_size == -1)
+				// read from client //
+				if (clients[id].client_active == 1)
 				{
-					if (errno == EAGAIN)
+					printf("worker(%d): client active \n", id);
+					recv_size = 0;
+					recv_size = recv(clients[id].client_socket, &buffer, BUF, MSG_DONTWAIT);
+					if (recv_size == -1)
 					{
-						//printf("worker(%d): client recv() EAGAIN\n", id);
-					}
-					else 
-					{
-						printf("worker(%d): client recv() failed: %d: %s \n", id, errno, strerror(errno));
-						clear(id);
-						goto work;
-					}
-				}
-				else if (recv_size == 0)
-				{
-					clear(id);
-					goto work;
-				}
-				else
-				{
-					// write to upstream //
-					if (recv_size != -1)
-					{
-						size_t write_size;
-						write_size = write(clients[id].upstream_socket, buffer, recv_size);
-						if (write_size == -1)
+						if (errno == EAGAIN)
 						{
-							printf("worker(%d): upstream write() failed: %d: %s \n", id, errno, strerror(errno));
+							printf("worker(%d): client recv() EAGAIN\n", id);
+						}
+						else 
+						{
+							printf("worker(%d): client recv() failed: %d: %s \n", id, errno, strerror(errno));
 							clear(id);
-							goto work;
+							continue;
+						}
+					}
+					else if (recv_size == 0)
+					{
+						clear(id);
+						continue;
+					}
+					else
+					{
+						// write to upstream //
+						if (recv_size != -1)
+						{
+							write_size = 0;
+							write_size = write(clients[id].upstream_socket, buffer, recv_size);
+							if (write_size == -1)
+							{
+								printf("worker(%d): upstream write() failed: %d: %s \n", id, errno, strerror(errno));
+								clear(id);
+								continue;
+							}
+							else
+							{
+								printf("> %.*s", recv_size, buffer);
+							}
+						}
+						// write to upstream //
+					}
+					// end read from client //
+				}
+				if (clients[id].upstream_active == 1)
+				{
+				// read from upstream //
+					//printf("worker(%d): upstream active \n", id);
+					if (mode == 0)
+					{
+					// splice mode //
+						splice_read = 0;
+						splice_read = splice(clients[id].upstream_socket, NULL, clients[id].pipes[1], NULL, BUF, SPLICE_F_MORE | SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+						if (splice_read == -1)
+						{
+								printf("worker(%d): upstream splice() failed: %d: %s \n", id, errno, strerror(errno));
+								clear(id);
+								continue;
+						}
+						if (splice_read == 0)
+						{
+								printf("worker(%d): nothing to splice() \n", id);
+								clear(id);
+								continue;
 						}
 						else
 						{
-							//printf("> %s", buffer);
+						// splice to client //
+							//printf("worker(%d): splice() %d \n", id, splice_read);
+							splice_write = 0;
+							splice_write = splice(clients[id].pipes[0], NULL, clients[id].client_socket, NULL, BUF, SPLICE_F_MORE | SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+							if (splice_write == -1)
+							{
+									printf("worker(%d): client splice() failed: %d: %s \n", id, errno, strerror(errno));
+									clear(id);
+									continue;
+							}
+							else
+							{
+									//printf("worker(%d): client splice() write: %d \n", id, splice_write);
+							}
+						// end splice to client //
 						}
+					// end splice mode //
 					}
-					// write to upstream //
-				}
-				// end read from client //
-			}
-			if (clients[id].active == clients[id].upstream_socket)
-			{
-				int splice_read;
-				splice_read = splice(clients[id].upstream_socket, NULL, clients[id].pipes[1], NULL, BUF, SPLICE_F_MORE | SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-				if (splice_read == -1)
-				{
-						printf("worker(%d): upstream splice() failed: %d: %s \n", id, errno, strerror(errno));
-						clear(id);
-						goto work;
-				}
-				if (splice_read == 0)
-				{
-						printf("worker(%d): nothing to splice() \n", id);
-						clear(id);
-						goto work;
-				}
-				else
-				{
-					//printf("worker(%d): splice() %d \n", id, splice_read);
-					int splice_write;
-					splice_write = splice(clients[id].pipes[0], NULL, clients[id].client_socket, NULL, BUF, SPLICE_F_MORE | SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-					if (splice_write == -1)
+					else
 					{
-							printf("worker(%d): client splice() failed: %d: %s \n", id, errno, strerror(errno));
+					// buffer mode //
+						recv_size = 0;
+						recv_size = recv(clients[id].upstream_socket, &buffer, BUF, MSG_DONTWAIT);
+						if (recv_size == -1)
+						{
+							if (errno == EAGAIN)
+							{
+								//printf("worker(%d): upstream recv() EAGAIN\n", id);
+							}
+							else 
+							{
+								printf("worker(%d): upstream recv() failed: %d: %s \n", id, errno, strerror(errno));
+								clear(id);
+								continue;
+							}
+						}
+						else if (recv_size == 0)
+						{
 							clear(id);
-							goto work;
+							continue;
+						}
+						else
+						{
+						// write to client //
+							if (recv_size != -1)
+							{
+								size_t write_size;
+								write_size = write(clients[id].client_socket, buffer, recv_size);
+								if (write_size == -1)
+								{
+									printf("worker(%d): client write() failed: %d: %s \n", id, errno, strerror(errno));
+									clear(id);
+									continue;
+								}
+								else
+								{
+									//printf("< %s", buffer);
+								}
+							}
+						// end write to client //
+						}
+					// end buffer mode //
 					}
+				// end read from upstream //
 				}
 			}
 		}
 	}
 }
 
-void* server(int listenport)
+void* server()
 {
 	// server socket //
 	int serv_socket;
@@ -261,7 +352,7 @@ void* server(int listenport)
 	struct sockaddr_in serv_addr;
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_addr.s_addr = INADDR_ANY;
-	serv_addr.sin_port = htons(listenport);
+	serv_addr.sin_port = htons(listen_port);
 	// end server address //
 
 
@@ -275,7 +366,7 @@ void* server(int listenport)
 	}
 	else
 	{
-		printf("server: bind() %d success: %d \n", listenport, serv_bind);
+		printf("server: bind() %d success: %d \n", listen_port, serv_bind);
 	}
 	// end bind server address & socket //
 
@@ -348,11 +439,10 @@ restart:
 					// end upstream socket //
 
 					// upstream address //
-					//struct sockaddr_in upstream_addr;
 					clients[id].upstream_addr.sin_family = AF_INET;
-					clients[id].upstream_addr.sin_port = htons(80);
+					clients[id].upstream_addr.sin_port = htons(upstream_port);
 					int pton;
-					pton = inet_pton(AF_INET, "192.168.1.100", &clients[id].upstream_addr.sin_addr);
+					pton = inet_pton(AF_INET, upstream_ip, &clients[id].upstream_addr.sin_addr);
 					if (pton != 1)
 					{
 						printf("server(%d): upstream inet_pton() failed: %d: \n", id, pton);
@@ -361,7 +451,7 @@ restart:
 					}
 					else
 					{
-						printf("server(%d): inet_pton() success: %d \n", id, pton);
+						printf("server(%d): inet_pton() success: %d %s \n", id, pton, upstream_ip);
 					}
 					// end upstream address //
 
@@ -389,6 +479,10 @@ restart:
 						}
 						else
 						{
+
+							// rebuild fd_set //
+							//build(id);
+
 							// allow worker to work on this connection //
 							clients[id].run = 1;
 						}
@@ -404,6 +498,42 @@ restart:
 
 int main(int argc, char *argv[])
 {
+	if (argc != 5)
+	{
+		printf("Usage: spliced listen_port upstream_ip upstream_port splice/buffer\n");
+		printf("Example: ./spliced 80 192.168.1.100 80 splice\n");
+		printf("Exmaple: ./spliced 80 192.168.1.100 80 buffer\n");
+		return 1;
+	}
+
+	listen_port = atoi(argv[1]);
+	if (listen_port == 0)
+	{
+		printf("Invalid listen_port \n");
+		return 1;
+	}
+	upstream_ip = argv[2];
+	upstream_port = atoi(argv[3]);
+	if (upstream_port == 0)
+	{
+		printf("Invalid upstream_port \n");
+		return 1;
+	}
+
+	if (strcmp(argv[4], "splice") == 0)
+	{
+		mode = 0;
+	}
+	else if (strcmp(argv[4], "buffer") == 0)
+	{
+		mode = 1;
+	}
+	else
+	{
+		printf("Invalid mode: must be 'splice' or 'buffer' \n");
+		return 1;
+	}
+
 	// start worker thread //
 	pthread_t thread_id;
 	int res;
@@ -420,7 +550,7 @@ int main(int argc, char *argv[])
 	// end start worker thread //
 
 	// run server forever //
-	server(atoi(argv[1]));
+	server();
 
 	return 0;
 }

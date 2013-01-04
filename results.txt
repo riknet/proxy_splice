@@ -1,0 +1,34 @@
+1000 x 10MB:
+
+	realtek:
+		linux:
+			splice:
+				top		49%
+				user    0m3.028s
+				sys     0m49.952s
+			buffer:
+				top		49%
+				user    0m3.392s
+				sys     0m45.704s
+		freebsd:
+			buffer: (doesn't get to 1Gbit)
+				top		3.96%
+				user	0.28
+				sys		11.88
+
+	intel:
+		linux:
+			splice:
+				top		19%
+				user    0m2.528s
+				sys     0m17.864s
+			buffer:
+				top		24%
+				user    0m2.676s
+				sys     0m22.656s
+		freebsd:
+			buffer:
+				top		28%
+				user	3.94
+				sys		25.65
+
