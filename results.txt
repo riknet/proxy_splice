@@ -1,34 +1,114 @@
-1000 x 10MB:
+ab -n 1000 -c 10 192.168.1.101:8001/10MB.zip
 
-	realtek:
-		linux:
-			splice:
-				top		49%
-				user    0m3.028s
-				sys     0m49.952s
-			buffer:
-				top		49%
-				user    0m3.392s
-				sys     0m45.704s
-		freebsd:
-			buffer: (doesn't get to 1Gbit)
-				top		3.96%
-				user	0.28
-				sys		11.88
+realtek:
+	linux:
+		proxy_splice splice:
+			top		51%
+			user	0m2.892s
+			sys		0m50.004s
+		proxy_splice buffer:
+			top		47%
+			user    0m3.096s
+			sys		0m44.400s
+		haproxy splice: (doesn't actually use splice() when I look at strace -c)
+			top		42%
+			user    0m3.876s
+			sys 	0m39.844s
+		haproxy buffer:
+			top		42%
+			user    0m3.952s
+			sys 	0m39.448s
+		nginx proxy_buffering off:
+			top		53%
+			user    0m6.364s
+			sys		0m47.904s
+		nginx proxy_max_temp_file_size 0/proxy_buffers 64 4k:
+			top		49%
+			user	0m6.868s
+			sys		0m43.592s
 
-	intel:
-		linux:
-			splice:
-				top		19%
-				user    0m2.528s
-				sys     0m17.864s
-			buffer:
-				top		24%
-				user    0m2.676s
-				sys     0m22.656s
-		freebsd:
-			buffer:
-				top		28%
-				user	3.94
-				sys		25.65
+
+	freebsd:
+		proxy_splice buffer: (doesn't get to 1Gbit)
+			top		9%
+			user	0.20
+			sys		11.96
+		haproxy buffer: (doesn't get to 1Gbit)
+			top		15%
+			user	3.29
+			sys		17.91
+		nginx proxy_buffering off: (doesn't get to 1Gbit)
+			top		20%
+			user	6.86
+			sys		23.29
+		nginx proxy_max_temp_file_size 0/proxy_buffers 64 4k: (doesn't get to 1Gbit)
+			top		21%
+			user	10.37
+			sys		21.39
+
+
+intel:
+	linux:
+		proxy_splice splice:
+			top		19%
+			user    0m2.528s
+			sys     0m17.864s
+		proxy_splice buffer:
+			top		24%
+			user    0m2.676s
+			sys     0m22.656s
+		haproxy splice: (doesn't actually use splice() when I look at strace -c)
+			top		22%
+			user    0m3.980s
+			sys		0m18.924s
+		haproxy buffer:
+			top		22%
+			user    0m3.752s
+			sys		0m19.284s
+		nginx proxy_buffering off:
+			top		34%
+			user	0m6.416s
+			sys		0m29.232s
+		nginx proxy_max_temp_file_size 0/proxy_buffers 64 4k:
+			top		29%
+			user    0m6.416s
+			sys		0m23.556s
+
+	freebsd:
+		proxy_splice buffer:
+			top		26%
+			user	3.95
+			sys		24.01
+		haproxy buffer:
+			top		24%
+			user	3.17
+			sys		22.29
+		nginx proxy_buffering off
+			top		27%
+			user	5.11
+			sys		25.17
+		nginx proxy_max_temp_file_size 0/proxy_buffers 64 4k:
+			top		25%
+			user	5.48
+			sys		20.75
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
