@@ -10,10 +10,10 @@ realtek:
 			top		47%
 			user    0m3.096s
 			sys		0m44.400s
-		haproxy splice: (doesn't actually use splice() when I look at strace -c)
-			top		42%
-			user    0m3.876s
-			sys 	0m39.844s
+		haproxy splice:
+			top		53%
+			user    0m3.912s
+			sys     0m51.000s
 		haproxy buffer:
 			top		42%
 			user    0m3.952s
@@ -57,10 +57,10 @@ intel:
 			top		24%
 			user    0m2.676s
 			sys     0m22.656s
-		haproxy splice: (doesn't actually use splice() when I look at strace -c)
+		haproxy splice: 
 			top		22%
-			user    0m3.980s
-			sys		0m18.924s
+			user    0m4.076s
+			sys     0m18.032s
 		haproxy buffer:
 			top		22%
 			user    0m3.752s
